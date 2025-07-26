@@ -1,6 +1,6 @@
 # main.py
 import os
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from sqlalchemy.orm import Session, joinedload
@@ -9,7 +9,6 @@ from datetime import datetime, timedelta, timezone
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 import google.generativeai as genai
-from google.cloud import speech # <-- Importante para Speech-to-Text
 from dotenv import load_dotenv
 
 from src import models, schemas
@@ -19,6 +18,8 @@ from src.database import engine, get_db
 load_dotenv()
 models.Base.metadata.create_all(bind=engine)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    raise ValueError("No se encontró la GEMINI_API_KEY. Asegúrate de que tu archivo .env es correcto.")
 genai.configure(api_key=GEMINI_API_KEY)
 
 # --- CONFIGURACIÓN DE SEGURIDAD ---
@@ -120,7 +121,7 @@ def record_correct_answer(current_user: models.User = Depends(get_current_user),
     return current_user
 
 @app.post("/api/tutor/chat", response_model=schemas.ChatResponse)
-def chat_with_tutor(user_message: schemas.ChatMessage):
+def chat_with_tutor(user_message: schemas.ChatMessage, current_user: models.User = Depends(get_current_user)):
     try:
         model = genai.GenerativeModel('gemini-1.5-flash-latest')
         response = model.generate_content(user_message.message)
@@ -131,40 +132,29 @@ def chat_with_tutor(user_message: schemas.ChatMessage):
 @app.post("/api/writing/feedback", response_model=schemas.WritingFeedback)
 def get_writing_feedback(submission: schemas.WritingSubmission, current_user: models.User = Depends(get_current_user)):
     prompt_template = f"""
-    Eres un tutor de inglés amigable y experto llamado Spacy.
-    Un estudiante ha escrito un texto basado en la siguiente instrucción: "{submission.prompt}".
-    El texto del estudiante es: "{submission.text}".
-
-    Por favor, evalúa el texto y responde EXACTAMENTE en el siguiente formato, sin texto adicional:
-    CORRECCIÓN: [Aquí escribe el texto del estudiante con las correcciones en mayúsculas. Si no hay errores, repite el texto original]
-    FEEDBACK: [Aquí escribe un comentario corto, positivo y útil en español sobre el texto.]
-    CALIFICACIÓN: [Aquí escribe un número del 1 al 5, donde 5 es excelente.]
+    Eres un tutor de inglés amigable y experto llamado Spacy. Un estudiante ha escrito un texto basado en la siguiente instrucción: "{submission.prompt}". El texto del estudiante es: "{submission.text}".
+    Por favor, evalúa el texto y responde EXACTAMENTE en el siguiente formato JSON:
+    {{
+        "correction": "[Aquí escribe el texto del estudiante con las correcciones en mayúsculas. Si no hay errores, repite el texto original]",
+        "feedback": "[Aquí escribe un comentario corto, positivo y útil en español sobre el texto.]",
+        "score": [Aquí escribe un número del 1 al 5, donde 5 es excelente.]
+    }}
     """
     try:
         model = genai.GenerativeModel('gemini-1.5-flash-latest')
         response = model.generate_content(prompt_template)
-        
-        parts = response.text.strip().split('\n')
-        correction = parts[0].replace("CORRECCIÓN:", "").strip()
-        feedback = parts[1].replace("FEEDBACK:", "").strip()
-        score = int(parts[2].replace("CALIFICACIÓN:", "").strip())
-        
-        return {
-            "correction": correction,
-            "feedback": feedback,
-            "score": score
-        }
+        # Limpiamos y parseamos la respuesta JSON de la IA
+        import json
+        clean_response = response.text.strip().replace("```json", "").replace("```", "")
+        feedback_data = json.loads(clean_response)
+        return feedback_data
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al contactar la IA: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al contactar o procesar la IA: {str(e)}")
 
 # --- ENDPOINTS PARA HERRAMIENTAS DE ESCRITURA CON IA ---
-
 @app.post("/api/writing/grammar_check", response_model=schemas.ToolResponse)
 def grammar_check(submission: schemas.WritingSubmission, current_user: models.User = Depends(get_current_user)):
-    prompt = f"""
-    Actúa como un corrector de gramática. Corrige el siguiente texto y devuelve únicamente el texto corregido.
-    Texto del estudiante: "{submission.text}"
-    """
+    prompt = f"""Actúa como un corrector de gramática. Corrige el siguiente texto y devuelve únicamente el texto corregido.\nTexto del estudiante: "{submission.text}" """
     try:
         model = genai.GenerativeModel('gemini-1.5-flash-latest')
         response = model.generate_content(prompt)
@@ -174,9 +164,7 @@ def grammar_check(submission: schemas.WritingSubmission, current_user: models.Us
 
 @app.post("/api/writing/verb_suggestions", response_model=schemas.ToolResponse)
 def get_verb_suggestions(request: schemas.ToolRequest, current_user: models.User = Depends(get_current_user)):
-    prompt = f"""
-    Actúa como un profesor de inglés. Para el tema "{request.prompt}", sugiere 5 verbos útiles en inglés, separados por comas. Devuelve solo los verbos.
-    """
+    prompt = f"""Actúa como un profesor de inglés. Para el tema "{request.prompt}", sugiere 5 verbos útiles en inglés, separados por comas. Devuelve solo los verbos."""
     try:
         model = genai.GenerativeModel('gemini-1.5-flash-latest')
         response = model.generate_content(prompt)
@@ -186,9 +174,7 @@ def get_verb_suggestions(request: schemas.ToolRequest, current_user: models.User
 
 @app.post("/api/writing/example", response_model=schemas.ToolResponse)
 def get_example(request: schemas.ToolRequest, current_user: models.User = Depends(get_current_user)):
-    prompt = f"""
-    Actúa como un profesor de inglés. Escribe una oración de ejemplo, simple y corta, para un estudiante de nivel A1 sobre el tema: "{request.prompt}". Devuelve solo la oración.
-    """
+    prompt = f"""Actúa como un profesor de inglés. Escribe una oración de ejemplo, simple y corta, para un estudiante de nivel A1 sobre el tema: "{request.prompt}". Devuelve solo la oración."""
     try:
         model = genai.GenerativeModel('gemini-1.5-flash-latest')
         response = model.generate_content(prompt)
@@ -196,23 +182,19 @@ def get_example(request: schemas.ToolRequest, current_user: models.User = Depend
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- ENDPOINT PARA SPEECH-TO-TEXT ---
-@app.post("/api/speech-to-text", response_model=schemas.TranscriptionResponse)
-def transcribe_audio(audio_file: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
+# --- ENDPOINT PARA SPACY DENTRO DE LA LECCIÓN ---
+@app.post("/api/lessons/chat", response_model=schemas.ChatResponse)
+def lesson_chat_with_tutor(request: schemas.InLessonChatRequest, current_user: models.User = Depends(get_current_user)):
+    system_prompt = ""
+    if request.mode == "practice":
+        system_prompt = f"Actúa como un compañero de conversación para practicar inglés llamado Spacy. El usuario es un estudiante y quiere practicar el tema: '{request.lesson_topic}'. Inicia una conversación de role-playing simple y corta sobre ese tema. Haz preguntas sencillas para que el usuario pueda responder. Mantén tus respuestas cortas y amigables."
+    elif request.mode == "question":
+        system_prompt = f"Actúa como un profesor de inglés experto y amigable llamado Spacy. El usuario está estudiando el tema '{request.lesson_topic}' y tiene una pregunta. Responde su pregunta de forma clara y concisa, enfocándote únicamente en el tema de la lección. Usa ejemplos si es necesario. Responde en español si la pregunta es en español."
+
+    full_prompt = f"{system_prompt}\n\nMensaje del usuario: \"{request.message}\""
     try:
-        client = speech.SpeechClient()
-        content = audio_file.file.read()
-        audio = speech.RecognitionAudio(content=content)
-        config = speech.RecognitionConfig(
-            encoding=speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
-            sample_rate_hertz=48000,
-            language_code="en-US",
-        )
-        response = client.recognize(config=config, audio=audio)
-        if response.results and response.results[0].alternatives:
-            transcript = response.results[0].alternatives[0].transcript
-            return {"transcript": transcript}
-        else:
-            return {"transcript": ""}
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        response = model.generate_content(full_prompt)
+        return {"reply": response.text}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error en la transcripción: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al contactar la IA: {str(e)}")

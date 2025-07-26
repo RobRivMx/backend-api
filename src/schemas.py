@@ -70,3 +70,8 @@ class ToolResponse(BaseModel):
     # Al final de src/schemas.py
 class TranscriptionResponse(BaseModel):
     transcript: str
+
+class InLessonChatRequest(BaseModel):
+    message: str
+    lesson_topic: str
+    mode: str # "practice" o "question"
