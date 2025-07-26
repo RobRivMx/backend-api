@@ -66,3 +66,7 @@ class ToolRequest(BaseModel):
 
 class ToolResponse(BaseModel):
     result: str
+
+    # Al final de src/schemas.py
+class TranscriptionResponse(BaseModel):
+    transcript: str

@@ -1,6 +1,6 @@
 # main.py
 import os
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from sqlalchemy.orm import Session, joinedload
@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 import google.generativeai as genai
+from google.cloud import speech # <-- Importante para Speech-to-Text
 from dotenv import load_dotenv
 
 from src import models, schemas
@@ -194,3 +195,24 @@ def get_example(request: schemas.ToolRequest, current_user: models.User = Depend
         return {"result": response.text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# --- ENDPOINT PARA SPEECH-TO-TEXT ---
+@app.post("/api/speech-to-text", response_model=schemas.TranscriptionResponse)
+def transcribe_audio(audio_file: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
+    try:
+        client = speech.SpeechClient()
+        content = audio_file.file.read()
+        audio = speech.RecognitionAudio(content=content)
+        config = speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
+            sample_rate_hertz=48000,
+            language_code="en-US",
+        )
+        response = client.recognize(config=config, audio=audio)
+        if response.results and response.results[0].alternatives:
+            transcript = response.results[0].alternatives[0].transcript
+            return {"transcript": transcript}
+        else:
+            return {"transcript": ""}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error en la transcripción: {str(e)}")
